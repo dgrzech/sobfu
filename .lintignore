@@ -1,0 +1,14 @@
+# Ignore the test directory when linting
+./tests/*
+
+# Ignore all git files when linting
+./.git/*
+
+# Ignore all scripts
+./scripts/*
+
+# Ignore the cmake directory
+./cmake/*
+
+# Ignore all contetnts of build directory
+./build/*

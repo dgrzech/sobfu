@@ -1,0 +1,56 @@
+# ---------------------------------------------------------------------------- #
+#                                   FILE FORMAT                                #
+# ---------------------------------------------------------------------------- #
+# Available checks can be found at http://clang.llvm.org/extra/clang-tidy/     #
+# To add a new check add it normally                                           #
+# To PREVENT the linter from using a check, prefix with '-'                    #
+# Extra links: https://clang.llvm.org/extra/clang-tidy/checks/list.html        #
+# Clang-tidy docs: https://clang.llvm.org/docs/ClangFormat.html                #
+# ---------------------------------------------------------------------------- #
+
+# Enforce google standard
+google-*
+
+# Use High Integrity C++ Coding Standard
+hicpp-*
+
+# Use LLVM Coding Standard
+llvm-*
+
+# Use all miscellaneous flags
+misc-*
+
+# Apply readability constraints
+readability-*
+
+# Apply bugprone checks
+bugprone-*
+
+# ---------------------------------------------------------------------------- #
+# The following are check DISABLES for certain behaviours
+
+# Allow un-use of use auto
+-hicpp-use-auto
+
+# Allow string comparison .compare and not only via == or !=
+-misc-string-compare
+
+# Allow warnings for signed bitwise operators
+-hicpp-signed-bitwise
+
+# Allow printfs calls in C style
+-hicpp-vararg
+
+# Allow implicit bool casts and conversions
+-readability-implicit-bool-cast
+-readability-implicit-bool-conversion
+
+# Prevent conflicting standards
+-llvm-include-order
+
+# Deprecated checks
+-hicpp-special-member-functions
+-hicpp-use-equals-delete
+-hicpp-no-array-decay
+-readability-delete-null-pointer
+-hicpp-member-init

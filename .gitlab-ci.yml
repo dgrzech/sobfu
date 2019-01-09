@@ -1,0 +1,325 @@
+# ---------------------------------------------------------------------------- #
+#                               GITLAB-RUNNER-CI                               #
+# ---------------------------------------------------------------------------- #
+
+# Version: v9.5.4
+# Running on graphic01.doc.ic.ac.uk
+
+# ---------------------------------------------------------------------------- #
+#                                  PIPELINE                                    #
+# ---------------------------------------------------------------------------- #
+# The CI pipeline is divided into the following stages:
+# Lint: Performs linter checks on the repo's code
+# Build: Builds the project
+# Test: Runs the project's tests
+# Deploy: Deploys the project to a given directory
+# Cleanup: Removes all artifacts required for the CI stages
+stages:
+  - Setup
+  - Lint
+  - Build
+  - Test
+  - Deploy
+  - Cleanup
+
+# env_setup defines a number of environment variables which can be called by
+# various before_scripts of the project.
+# 1) Exporting the PATH is necessary to enable linking of the custom installed
+#    binaries in the group's shared directory.
+# 2) setup.sh makes sure all Cuda related binaries are setup correctly.
+#    This includes, but isn't limited to, CUDA itself and OpenGL.
+.env_setup: &env_setup |
+  source setup.sh --set-paths
+
+# Variables for use in script
+variables:
+  CONTAINER_IMAGE: g1736211/dynfu
+  DEV_IMAGE: g1736211/dynfu:dev
+  TAG_IMAGE: g1736211/dynfu:${CI_COMMIT_REF_SLUG}
+# ---------------------------------------------------------------------------- #
+#                                     SETUP                                    #
+# ---------------------------------------------------------------------------- #
+# The Setup stage sets all the nevironment variables and paths using cmake.
+
+# > cmake <
+# Cmake will generate a Makefile for the project linking all needed dependencies
+# Cmake stage is required to not fail, in which case it would fail the pipeline.
+cmake:
+  stage: Setup
+
+  # Before attempting to cmake env variables must be set to link the binaries
+  # Call .setup.sh which creates build and setup the dependencies
+  # Cmake will also build inside the build/ directory
+  before_script:
+    - rm -rf build || true
+    - source setup.sh --set-paths
+
+  # Build/ directory is cached for a given commit SHA to make sure all the tasks
+  # within a same pipeline will have access to the correctly built project
+  cache:
+    key: "$CI_COMMIT_SHA"
+    paths:
+      - build/
+
+  # Cmake requires two additional flags:
+  # 1) CMAKE_PREFIX enables it to find the custom built binaries
+  # 2) CMAKE_CXX_FLAGS are necessary to be set as otherwise BASH doesn't seem to
+  #    set the c++ standard correctly (i.e. will throw a number of errors)
+  # 3) [Others]
+  script:
+    - source setup.sh --cmake -i
+
+# ---------------------------------------------------------------------------- #
+#                                     LINT                                     #
+# ---------------------------------------------------------------------------- #
+# The Lint stage runs the linter on the project's files.
+
+# > clang_format <
+# Clang formatting will ensure that the latest files have been formatted with
+# clang-styling. This step does not fix linter errors, it will just point them
+# out to the pipeline, failing it.
+clang_format:
+  stage: Lint
+
+  # Set env variables before testing should we need to access CUDA of OpenGL
+  # headers.
+  before_script:
+    - *env_setup
+
+  # Files are considered to be source only if *.cpp or *.hpp.
+  # Excluded files or directories must be set manually in .lintignore
+  script:
+     # Print out the configuration file variables
+     - /vol/project/2017/362/g1736211/bin/clang-format -dump-config
+     # Attempt to check if clang-format had been run before saving
+     - ./scripts/.format_bash
+
+# > lint <
+# The linter used for the project is clang-tidy.
+# 1) Linting stage must run after build due to the numerous dependencies created
+#    by Cmake. All these dependencies are logged into compile_commands.json and
+#    are referenced by clang-tidy when linting (i.e. to scan headers).
+# 2) The run-clang-tidy python script must be linked to the relevant clang-tidy
+#    executable as it cannot be found in it's canonical place (i.e /usr/bin).
+# 3) run-clang-tidy.py will accept all clang-tidy flags, it has extra value as
+#    it can use the compile_commands.json information.
+#
+# USED FLAGS:
+# 1) -list-checks : Lists all the enabled checks.
+# 2) -checks= : Sets different checkstyles for the source files
+# 3) -p <DIR> : Sets the path for the build directory containing the
+#               compile_commands.json information.
+# 4) -warnings-as-errors=* : Treats all warnings as errors.
+#
+# Used checks can be found in .lintflags
+clang_tidy:
+  stage: Lint
+
+  # Set env variables before testing should we need to access CUDA of OpenGL
+  # headers.
+  before_script:
+    - *env_setup
+
+  # Linting must occur on the newly built build/ binaries.
+  cache:
+    key: "$CI_COMMIT_SHA"
+    paths:
+      - build/
+    policy: pull
+
+  # Files are considered to be source only if *.cpp or *.hpp.
+  # Excluded files or directories must be set manually in .lintignore
+  script:
+     # Print out the list of enabled checks
+     - /vol/project/2017/362/g1736211/bin/clang-tidy `./scripts/.flags_bash` -list-checks
+     # Print out the list of files which will be checked for linting
+     - ./scripts/.find_bash
+     # Perform the linting with the above configuratiions
+     - /vol/project/2017/362/g1736211/bin/clang-tidy -p build `./scripts/.diff_tidy_bash` `./scripts/.flags_bash` `./scripts/.find_bash`
+
+# ---------------------------------------------------------------------------- #
+#                                    BUILD                                     #
+# ---------------------------------------------------------------------------- #
+# The build project actually generates the binaries for the project.
+# According to the flags set during the CMake stage, tests are built as well in
+# their respective directories.
+
+# > make <
+# The make stage will run the Makefile generated by cmake in the build/ dir.
+# The make stage is required not to fail.
+make:
+  stage: Build
+
+  # Before attempting to make env variables must be set to make sure all
+  # binaries referenced by the Makefile can be accessed.
+  # Make will also build the executables inside the build/ directory
+  before_script:
+    - *env_setup
+
+  # Build/ directory is cached for a given commit SHA to make sure all the tasks
+  # within a same pipeline will have access to the correctly built project
+  cache:
+    key: "$CI_COMMIT_SHA"
+    paths:
+      - build/
+
+  # Run simple make from the Makefile on four processes.
+  script:
+    - source setup.sh --make
+
+# > docker_image_build <
+# The docker_image_build stage creates the Docker image for an EC2 instance 
+# on a docker-compatible runner
+docker_image_build:
+  stage: Build
+  tags:
+    - docker
+  script:
+    - docker build --build-arg CUDA_GENERATION=Maxwell -t $TAG_IMAGE .
+  except:
+    - master
+
+# > docker_image_build_master <
+# The docker_image_build_master stage creates the Docker image for all architectures
+# on a docker-compatible runner
+docker_image_build_master:
+  stage: Build
+  tags:
+    - docker
+  script:
+    - docker build --build-arg CUDA_GENERATION=Auto -t $TAG_IMAGE .
+  only:
+    - master
+
+# ---------------------------------------------------------------------------- #
+#                                    TEST                                      #
+# ---------------------------------------------------------------------------- #
+# The Test stage will perform a number of tests on the Project.
+
+# > gtest <
+# The gtest stage runs the GTest suite present within the library.
+# GTest binaries can be found in the group shared directory.
+gtest:
+  stage: Test
+
+  # Set env variables before testing should we need to access CUDA of OpenGL
+  # headers.
+  before_script:
+    - *env_setup
+
+  # Testing must occur on the newly built build/ binaries.
+  cache:
+    key: "$CI_COMMIT_SHA"
+    paths:
+      - build/
+    policy: pull
+
+  # Run the gtests
+  script:
+    - ./build/bin/dynfu_test
+
+# > coverage <
+# The coverage stage runs gcov (and on top of that lcov) to generate a coverage
+# report of the test for the source files.
+coverage:
+  stage: Test
+
+  # Set env variables before testing should we need to access CUDA of OpenGL
+  # headers.
+  before_script:
+    - *env_setup
+
+  # Coverage report is constructed for the newly build binaries
+  cache:
+    key: "$CI_COMMIT_SHA"
+    paths:
+      - build/
+    policy: pull
+
+  # Generate the coverage report
+  script:
+    - source setup.sh --coverage
+
+# ---------------------------------------------------------------------------- #
+#                                   DEPLOY                                     #
+# ---------------------------------------------------------------------------- #
+# The Deploy stage deploys newly built and tested binaries to a given location
+# on disk.
+
+# > deploy <
+# The deploy stage will deploy the newly built project binaries
+# to /data/dynfu.
+deploy:
+  stage: Deploy
+
+  # The latest build build/ must be retrieved from cache
+  cache:
+    key: "$CI_COMMIT_SHA"
+    paths:
+      - build/
+    policy: pull
+
+  # Clean the output distributed library directory to clone new data into it
+  before_script:
+    - rm -rf /data/dynfu
+    - mkdir /data/dynfu
+
+  # Copy the latest build BINARIES to /data/
+  script:
+    - cp -R build/bin/* /data/dynfu
+
+# > docker_image__deploy_dev <
+# Deploys to Docker Hub
+docker_image_deploy_dev:
+  stage: Deploy
+  tags:
+    - docker
+  script:
+    - docker login -u $DOCKER_HUB_LOGIN -p $DOCKER_HUB_PASSWORD
+    - docker tag $TAG_IMAGE $DEV_IMAGE
+    - docker push $DEV_IMAGE
+  only:
+    - dev
+
+# > docker_image_deploy <
+# Deploys to Docker Hub
+docker_image_deploy:
+  stage: Deploy
+  tags:
+    - docker
+  script:
+    - docker login -u $DOCKER_HUB_LOGIN -p $DOCKER_HUB_PASSWORD
+    - docker tag $TAG_IMAGE $CONTAINER_IMAGE
+    - docker push $CONTAINER_IMAGE
+  only:
+    - master
+
+# > test_dynfu_on_ec2 <
+# Trigger testing on ec2 instance
+test_dynfu_on_ec2:
+  stage: Deploy
+  tags:
+    - docker
+  before_script:
+    - pip install awscli
+    - export PATH="${PATH}:~/.local/bin"
+  script:
+    - AWS_ACCESS_KEY_ID=${UPDATE_LAMBDA_KEY} AWS_SECRET_ACCESS_KEY=${UPDATE_LAMBDA_PASS} AWS_DEFAULT_REGION=eu-west-1 aws lambda invoke --function-name dynamic-fusion-trigger-testing /tmp/lambda-out
+  only:
+    - dev
+# ---------------------------------------------------------------------------- #
+#                                   CLEANUP                                    #
+# ---------------------------------------------------------------------------- #
+# The Cleanup stage makes sure the cache storage is cleaned for a given
+# pipeline in the runners directories.
+
+# > cache_cleanup <
+# It runs regardless of failure or success, and thus has the aim of cleaning
+# up the testing environment. In particular this script must remove unused
+# cache artifacts that were stored within one pipeline.
+cache_cleanup:
+  stage: Cleanup
+  script:
+    - echo "Present Cache:" && ls /home/gitlab-runner/cache/g1736211/dynfu/
+    - rm -rf "/home/gitlab-runner/cache/g1736211/dynfu/$CI_COMMIT_SHA"
+  when: always
